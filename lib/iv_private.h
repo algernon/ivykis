@@ -90,12 +90,9 @@ struct iv_state {
 #ifdef NEED_SELECT
 		struct {
 			struct iv_avl_tree	fds;
+			void			*sets;
 			int			setsize;
 			int			fd_max;
-			fd_set			*readfds_master;
-			fd_set			*writefds_master;
-			fd_set			*readfds;
-			fd_set			*writefds;
 		} select;
 #endif
 	};
@@ -234,13 +231,29 @@ struct iv_poll_method {
 	char	*name;
 	int	(*init)(struct iv_state *st);
 	void	(*poll)(struct iv_state *st, 
-			struct iv_list_head *active, int msec);
+			struct iv_list_head *active, struct timespec *to);
 	void	(*register_fd)(struct iv_state *st, struct iv_fd_ *fd);
 	void	(*unregister_fd)(struct iv_state *st, struct iv_fd_ *fd);
 	void	(*notify_fd)(struct iv_state *st, struct iv_fd_ *fd);
 	int	(*notify_fd_sync)(struct iv_state *st, struct iv_fd_ *fd);
 	void	(*deinit)(struct iv_state *st);
 };
+
+static inline void
+__iv_list_steal_elements(struct iv_list_head *oldh, struct iv_list_head *newh)
+{
+	struct iv_list_head *first = oldh->next;
+	struct iv_list_head *last = oldh->prev;
+
+	last->next = newh;
+	first->prev = newh;
+
+	newh->next = oldh->next;
+	newh->prev = oldh->prev;
+
+	oldh->next = oldh;
+	oldh->prev = oldh;
+}
 
 /* iv_main.c */
 extern int maxfd;

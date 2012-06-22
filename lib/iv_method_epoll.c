@@ -23,7 +23,6 @@
 #include <fcntl.h>
 #include <string.h>
 #include <sys/epoll.h>
-#include <syslog.h>
 #include "iv_private.h"
 
 static int iv_epoll_init(struct iv_state *st)
@@ -104,9 +103,8 @@ static int __iv_epoll_flush_one(struct iv_state *st, struct iv_fd_ *fd)
 static void iv_epoll_flush_one(struct iv_state *st, struct iv_fd_ *fd)
 {
 	if (__iv_epoll_flush_one(st, fd) < 0) {
-		syslog(LOG_CRIT, "iv_epoll_flush_one: got "
-		       "error %d[%s]", errno, strerror(errno));
-		abort();
+		iv_fatal("iv_epoll_flush_one: got error %d[%s]",
+			 errno, strerror(errno));
 	}
 }
 
@@ -122,23 +120,25 @@ static void iv_epoll_flush_pending(struct iv_state *st)
 	}
 }
 
-static void
-iv_epoll_poll(struct iv_state *st, struct iv_list_head *active, int msec)
+static void iv_epoll_poll(struct iv_state *st,
+			  struct iv_list_head *active, struct timespec *to)
 {
 	struct epoll_event batch[st->numfds ? : 1];
+	int msec;
 	int ret;
 	int i;
 
 	iv_epoll_flush_pending(st);
+
+	msec = 1000 * to->tv_sec + ((to->tv_nsec + 999999) / 1000000);
 
 	ret = epoll_wait(st->epoll.epoll_fd, batch, st->numfds ? : 1, msec);
 	if (ret < 0) {
 		if (errno == EINTR)
 			return;
 
-		syslog(LOG_CRIT, "iv_epoll_poll: got error %d[%s]",
-		       errno, strerror(errno));
-		abort();
+		iv_fatal("iv_epoll_poll: got error %d[%s]", errno,
+			 strerror(errno));
 	}
 
 	for (i = 0; i < ret; i++) {

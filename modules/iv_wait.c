@@ -25,6 +25,7 @@
 #include <iv_tls.h>
 #include <iv_wait.h>
 #include <pthread.h>
+#include "iv_private.h"
 #include "config.h"
 
 #ifndef WCONTINUED
@@ -160,42 +161,10 @@ static void iv_wait_got_sigchld(void *_dummy)
 	pthread_mutex_unlock(&iv_wait_lock);
 }
 
-static void iv_wait_completion(void *_this)
-{
-	struct iv_wait_interest *this = _this;
-
-	this->term = (void **)&this;
-
-	pthread_mutex_lock(&iv_wait_lock);
-	while (!iv_list_empty(&this->events)) {
-		struct wait_event *we;
-
-		we = iv_container_of(this->events.next,
-				     struct wait_event, list);
-		iv_list_del(&we->list);
-
-		pthread_mutex_unlock(&iv_wait_lock);
-#ifdef HAVE_WAIT4
-		this->handler(this->cookie, we->status, &we->rusage);
-#else
-		this->handler(this->cookie, we->status, NULL);
-#endif
-		pthread_mutex_lock(&iv_wait_lock);
-
-		free(we);
-
-		if (this == NULL)
-			break;
-	}
-	pthread_mutex_unlock(&iv_wait_lock);
-
-	if (this != NULL)
-		this->term = NULL;
-}
-
 struct iv_wait_thr_info {
-	int			wait_count;
-	struct iv_signal	sigchld_interest;
+	int				wait_count;
+	struct iv_signal		sigchld_interest;
+	struct iv_wait_interest		*handled_wait_interest;
 };
 
 static void iv_wait_tls_init_thread(void *_tinfo)
@@ -208,6 +177,8 @@ static void iv_wait_tls_init_thread(void *_tinfo)
 	tinfo->sigchld_interest.signum = SIGCHLD;
 	tinfo->sigchld_interest.flags = IV_SIGNAL_FLAG_EXCLUSIVE;
 	tinfo->sigchld_interest.handler = iv_wait_got_sigchld;
+
+	tinfo->handled_wait_interest = NULL;
 }
 
 static struct iv_tls_user iv_wait_tls_user = {
@@ -219,6 +190,41 @@ static void iv_wait_tls_init(void) __attribute__((constructor));
 static void iv_wait_tls_init(void)
 {
 	iv_tls_user_register(&iv_wait_tls_user);
+}
+
+static void iv_wait_completion(void *_this)
+{
+	struct iv_wait_thr_info *tinfo = iv_tls_user_ptr(&iv_wait_tls_user);
+	struct iv_wait_interest *this = _this;
+	struct iv_list_head events;
+
+	pthread_mutex_lock(&iv_wait_lock);
+	__iv_list_steal_elements(&this->events, &events);
+	pthread_mutex_unlock(&iv_wait_lock);
+
+	tinfo->handled_wait_interest = this;
+
+	while (!iv_list_empty(&events)) {
+		struct wait_event *we;
+
+		we = iv_container_of(events.next, struct wait_event, list);
+		iv_list_del(&we->list);
+
+		if (tinfo->handled_wait_interest != NULL) {
+#ifdef HAVE_WAIT4
+			this->handler(this->cookie, we->status, &we->rusage);
+#else
+			this->handler(this->cookie, we->status, NULL);
+#endif
+		}
+
+		free(we);
+
+		if (tinfo->handled_wait_interest == NULL)
+			break;
+	}
+
+	tinfo->handled_wait_interest = NULL;
 }
 
 static void __iv_wait_interest_register(struct iv_wait_thr_info *tinfo,
@@ -234,7 +240,7 @@ static void __iv_wait_interest_register(struct iv_wait_thr_info *tinfo,
 
 	INIT_IV_LIST_HEAD(&this->events);
 
-	this->term = NULL;
+	this->dummy = NULL;
 
 	this->flags = 0;
 }
@@ -264,8 +270,8 @@ static void __iv_wait_interest_unregister(struct iv_wait_thr_info *tinfo,
 		free(we);
 	}
 
-	if (this->term != NULL)
-		*this->term = NULL;
+	if (tinfo->handled_wait_interest == this)
+		tinfo->handled_wait_interest = NULL;
 
 	if (!--tinfo->wait_count)
 		iv_signal_unregister(&tinfo->sigchld_interest);

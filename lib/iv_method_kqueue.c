@@ -22,7 +22,6 @@
 #include <stdlib.h>
 #include <fcntl.h>
 #include <string.h>
-#include <syslog.h>
 #include <sys/types.h>
 #include <sys/event.h>
 #include <sys/time.h>
@@ -87,11 +86,21 @@ iv_kqueue_queue_one(struct kevent *kev, int *_num, struct iv_fd_ *fd)
 	*_num = num;
 }
 
+static int kevent_retry(int kq, const struct kevent *changelist, int nchanges)
+{
+	struct timespec to = { 0, 0 };
+	int ret;
+
+	do {
+		ret = kevent(kq, changelist, nchanges, NULL, 0, &to);
+	} while (ret < 0 && errno == EINTR);
+
+	return ret;
+}
+
 static void
 iv_kqueue_upload(struct iv_state *st, struct kevent *kev, int size, int *num)
 {
-	struct timespec to = { 0, 0 };
-
 	*num = 0;
 
 	while (!iv_list_empty(&st->kqueue.notify)) {
@@ -100,12 +109,10 @@ iv_kqueue_upload(struct iv_state *st, struct kevent *kev, int size, int *num)
 		if (*num > size - 2) {
 			int ret;
 
-			ret = kevent(st->kqueue.kqueue_fd, kev, *num,
-				     NULL, 0, &to);
+			ret = kevent_retry(st->kqueue.kqueue_fd, kev, *num);
 			if (ret < 0) {
-				syslog(LOG_CRIT, "iv_kqueue_upload: got error "
-				       "%d[%s]", errno, strerror(errno));
-				abort();
+				iv_fatal("iv_kqueue_upload: got error %d[%s]",
+					 errno, strerror(errno));
 			}
 
 			*num = 0;
@@ -119,12 +126,11 @@ iv_kqueue_upload(struct iv_state *st, struct kevent *kev, int size, int *num)
 	}
 }
 
-static void
-iv_kqueue_poll(struct iv_state *st, struct iv_list_head *active, int msec)
+static void iv_kqueue_poll(struct iv_state *st,
+			   struct iv_list_head *active, struct timespec *to)
 {
 	struct kevent kev[UPLOAD_BATCH];
 	int num;
-	struct timespec to;
 	struct kevent batch[st->numfds ? : 1];
 	int ret;
 	int i;
@@ -141,18 +147,14 @@ iv_kqueue_poll(struct iv_state *st, struct iv_list_head *active, int msec)
 	for (i = 0; i < (st->numfds ? : 1); i++)
 		batch[i].udata = 0;
 
-	to.tv_sec = msec / 1000;
-	to.tv_nsec = 1000000 * (msec % 1000);
-
 	ret = kevent(st->kqueue.kqueue_fd, kev, num,
-		     batch, st->numfds ? : 1, &to);
+		     batch, st->numfds ? : 1, to);
 	if (ret < 0) {
 		if (errno == EINTR)
 			return;
 
-		syslog(LOG_CRIT, "iv_kqueue_poll: got error %d[%s]",
-		       errno, strerror(errno));
-		abort();
+		iv_fatal("iv_kqueue_poll: got error %d[%s]", errno,
+			 strerror(errno));
 	}
 
 	for (i = 0; i < ret; i++) {
@@ -164,9 +166,8 @@ iv_kqueue_poll(struct iv_state *st, struct iv_list_head *active, int msec)
 		} else if (batch[i].filter == EVFILT_WRITE) {
 			iv_fd_make_ready(active, fd, MASKOUT);
 		} else {
-			syslog(LOG_CRIT, "iv_kqueue_poll: got message from "
-					 "filter %d", batch[i].filter);
-			abort();
+			iv_fatal("iv_kqueue_poll: got message from filter %d",
+				 batch[i].filter);
 		}
 	}
 }
@@ -179,14 +180,12 @@ static void iv_kqueue_upload_all(struct iv_state *st)
 	iv_kqueue_upload(st, kev, UPLOAD_BATCH, &num);
 
 	if (num) {
-		struct timespec to = { 0, 0 };
 		int ret;
 
-		ret = kevent(st->kqueue.kqueue_fd, kev, num, NULL, 0, &to);
+		ret = kevent_retry(st->kqueue.kqueue_fd, kev, num);
 		if (ret < 0) {
-			syslog(LOG_CRIT, "iv_kqueue_upload_all: got error "
-			       "%d[%s]", errno, strerror(errno));
-			abort();
+			iv_fatal("iv_kqueue_upload_all: got error %d[%s]",
+				 errno, strerror(errno));
 		}
 	}
 }
@@ -208,14 +207,13 @@ static int iv_kqueue_notify_fd_sync(struct iv_state *st, struct iv_fd_ *fd)
 {
 	struct kevent kev[2];
 	int num;
-	struct timespec to = { 0, 0 };
 	int ret;
 
 	iv_kqueue_queue_one(kev, &num, fd);
 	if (num == 0)
 		return 0;
 
-	ret = kevent(st->kqueue.kqueue_fd, kev, num, NULL, 0, &to);
+	ret = kevent_retry(st->kqueue.kqueue_fd, kev, num);
 	if (ret == 0)
 		fd->registered_bands = fd->wanted_bands;
 
