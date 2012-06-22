@@ -1,3 +1,9 @@
+ivykis (0.30-1) unstable; urgency=low
+
+  * New upstream release.
+
+ -- Gergely Nagy <algernon@madhouse-project.org>  Fri, 22 Jun 2012 22:22:32 +0200
+
 ivykis (0.29-1) unstable; urgency=low
 
   * Initial release (Closes: #651176)
