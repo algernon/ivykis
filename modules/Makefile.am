@@ -1,6 +1,7 @@
 SUBDIRS = . man3
 
 AM_CPPFLAGS		= -D_GNU_SOURCE				\
+			  -I$(top_srcdir)/lib			\
 			  -I$(top_srcdir)/lib/include		\
 			  -I$(top_builddir)/lib/include		\
 			  -I$(top_srcdir)/modules/include
@@ -36,3 +37,5 @@ include_HEADERS		= include/iv_event.h		\
 			  include/iv_thread.h		\
 			  include/iv_wait.h		\
 			  include/iv_work.h
+
+noinst_HEADERS		= spinlock.h

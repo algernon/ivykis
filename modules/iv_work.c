@@ -20,23 +20,28 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <inttypes.h>
 #include <iv.h>
 #include <iv_list.h>
 #include <iv_thread.h>
 #include <iv_tls.h>
 #include <iv_work.h>
 #include <pthread.h>
+#include <syslog.h>
+#include "iv_private.h"
 
 /* data structures **********************************************************/
 struct work_pool_priv {
 	pthread_mutex_t		lock;
 	struct iv_event		ev;
-	struct iv_work_pool	*public;
+	int			shutting_down;
+	int			started_threads;
+	struct iv_list_head	idle_threads;
 	void			*cookie;
 	void			(*thread_start)(void *cookie);
 	void			(*thread_stop)(void *cookie);
-	int			started_threads;
-	struct iv_list_head	idle_threads;
+	uint32_t		seq_head;
+	uint32_t		seq_tail;
 	struct iv_list_head	work_items;
 	struct iv_list_head	work_done;
 };
@@ -55,10 +60,10 @@ static void __iv_work_thread_die(struct work_pool_thread *thr)
 {
 	struct work_pool_priv *pool = thr->pool;
 
-	iv_list_del(&thr->list);
+	if (thr->kicked)
+		iv_fatal("__iv_work_thread_die: called on kicked thread");
+
 	iv_event_unregister(&thr->kick);
-	if (iv_timer_registered(&thr->idle_timer))
-		iv_timer_unregister(&thr->idle_timer);
 	free(thr);
 
 	pool->started_threads--;
@@ -66,7 +71,7 @@ static void __iv_work_thread_die(struct work_pool_thread *thr)
 	if (pool->thread_stop != NULL)
 		pool->thread_stop(pool->cookie);
 
-	if (pool->public == NULL && !pool->started_threads)
+	if (pool->shutting_down && !pool->started_threads)
 		iv_event_post(&pool->ev);
 }
 
@@ -74,41 +79,47 @@ static void iv_work_thread_got_event(void *_thr)
 {
 	struct work_pool_thread *thr = _thr;
 	struct work_pool_priv *pool = thr->pool;
+	uint32_t last_seq;
 
 	pthread_mutex_lock(&pool->lock);
 
 	thr->kicked = 0;
 
-	while (1) {
+	if (!iv_list_empty(&thr->list)) {
+		iv_list_del_init(&thr->list);
+		iv_timer_unregister(&thr->idle_timer);
+	}
+
+	last_seq = pool->seq_tail;
+	while ((int32_t)(last_seq - pool->seq_head) > 0) {
 		struct iv_work_item *work;
 
-		if (iv_list_empty(&pool->work_items))
-			break;
-
+		pool->seq_head++;
 		work = iv_container_of(pool->work_items.next,
 				       struct iv_work_item, list);
 		iv_list_del(&work->list);
-
-		iv_list_del(&thr->list);
-		iv_timer_unregister(&thr->idle_timer);
 
 		pthread_mutex_unlock(&pool->lock);
 		work->work(work->cookie);
 		iv_invalidate_now();
 		pthread_mutex_lock(&pool->lock);
 
-		iv_list_add(&thr->list, &pool->idle_threads);
-		iv_validate_now();
-		thr->idle_timer.expires = iv_now;
-		thr->idle_timer.expires.tv_sec += 10;
-		iv_timer_register(&thr->idle_timer);
-
+		if (iv_list_empty(&pool->work_done))
+			iv_event_post(&pool->ev);
 		iv_list_add_tail(&work->list, &pool->work_done);
-		iv_event_post(&pool->ev);
 	}
 
-	if (pool->public == NULL)
-		__iv_work_thread_die(thr);
+	if (pool->seq_head == pool->seq_tail) {
+		if (!pool->shutting_down) {
+			iv_list_add(&thr->list, &pool->idle_threads);
+			iv_validate_now();
+			thr->idle_timer.expires = iv_now;
+			thr->idle_timer.expires.tv_sec += 10;
+			iv_timer_register(&thr->idle_timer);
+		} else {
+			__iv_work_thread_die(thr);
+		}
+	}
 
 	pthread_mutex_unlock(&pool->lock);
 }
@@ -130,6 +141,7 @@ static void iv_work_thread_idle_timeout(void *_thr)
 		return;
 	}
 
+	iv_list_del(&thr->list);
 	__iv_work_thread_die(thr);
 
 	pthread_mutex_unlock(&pool->lock);
@@ -142,6 +154,8 @@ static void iv_work_thread(void *_thr)
 
 	iv_init();
 
+	INIT_IV_LIST_HEAD(&thr->list);
+
 	thr->kicked = 0;
 
 	IV_EVENT_INIT(&thr->kick);
@@ -150,16 +164,8 @@ static void iv_work_thread(void *_thr)
 	iv_event_register(&thr->kick);
 
 	IV_TIMER_INIT(&thr->idle_timer);
-	iv_validate_now();
-	thr->idle_timer.expires = iv_now;
-	thr->idle_timer.expires.tv_sec += 10;
 	thr->idle_timer.cookie = thr;
 	thr->idle_timer.handler = iv_work_thread_idle_timeout;
-	iv_timer_register(&thr->idle_timer);
-
-	pthread_mutex_lock(&pool->lock);
-	iv_list_add_tail(&thr->list, &pool->idle_threads);
-	pthread_mutex_unlock(&pool->lock);
 
 	if (pool->thread_start != NULL)
 		pool->thread_start(pool->cookie);
@@ -176,31 +182,32 @@ static void iv_work_thread(void *_thr)
 static void iv_work_event(void *_pool)
 {
 	struct work_pool_priv *pool = _pool;
+	struct iv_list_head items;
 
 	pthread_mutex_lock(&pool->lock);
+	__iv_list_steal_elements(&pool->work_done, &items);
+	pthread_mutex_unlock(&pool->lock);
 
-	while (!iv_list_empty(&pool->work_done)) {
+	while (!iv_list_empty(&items)) {
 		struct iv_work_item *work;
 
-		work = iv_container_of(pool->work_done.next,
-				       struct iv_work_item, list);
-
+		work = iv_container_of(items.next, struct iv_work_item, list);
 		iv_list_del(&work->list);
 
-		pthread_mutex_unlock(&pool->lock);
 		work->completion(work->cookie);
+	}
+
+	if (pool->shutting_down) {
 		pthread_mutex_lock(&pool->lock);
-	}
-
-	if (pool->public == NULL && !pool->started_threads) {
+		if (!pool->started_threads && iv_list_empty(&pool->work_done)) {
+			pthread_mutex_unlock(&pool->lock);
+			pthread_mutex_destroy(&pool->lock);
+			iv_event_unregister(&pool->ev);
+			free(pool);
+			return;
+		}
 		pthread_mutex_unlock(&pool->lock);
-		pthread_mutex_destroy(&pool->lock);
-		iv_event_unregister(&pool->ev);
-		free(pool);
-		return;
 	}
-
-	pthread_mutex_unlock(&pool->lock);
 }
 
 int iv_work_pool_create(struct iv_work_pool *this)
@@ -223,12 +230,14 @@ int iv_work_pool_create(struct iv_work_pool *this)
 	pool->ev.handler = iv_work_event;
 	iv_event_register(&pool->ev);
 
-	pool->public = this;
+	pool->shutting_down = 0;
+	pool->started_threads = 0;
+	INIT_IV_LIST_HEAD(&pool->idle_threads);
 	pool->cookie = this->cookie;
 	pool->thread_start = this->thread_start;
 	pool->thread_stop = this->thread_stop;
-	pool->started_threads = 0;
-	INIT_IV_LIST_HEAD(&pool->idle_threads);
+	pool->seq_head = 0;
+	pool->seq_tail = 0;
 	INIT_IV_LIST_HEAD(&pool->work_items);
 	INIT_IV_LIST_HEAD(&pool->work_done);
 
@@ -245,7 +254,7 @@ void iv_work_pool_put(struct iv_work_pool *this)
 	pthread_mutex_lock(&pool->lock);
 
 	this->priv = NULL;
-	pool->public = NULL;
+	pool->shutting_down = 1;
 
 	if (!pool->started_threads) {
 		pthread_mutex_unlock(&pool->lock);
@@ -295,6 +304,7 @@ iv_work_submit_pool(struct iv_work_pool *this, struct iv_work_item *work)
 
 	pthread_mutex_lock(&pool->lock);
 
+	pool->seq_tail++;
 	iv_list_add_tail(&work->list, &pool->work_items);
 
 	if (!iv_list_empty(&pool->idle_threads)) {
@@ -343,13 +353,13 @@ static void iv_work_tls_init(void)
 static void iv_work_handle_local(void *_tinfo)
 {
 	struct iv_work_thr_info *tinfo = _tinfo;
+	struct iv_list_head items;
 
-	while (!iv_list_empty(&tinfo->work_items)) {
+	__iv_list_steal_elements(&tinfo->work_items, &items);
+	while (!iv_list_empty(&items)) {
 		struct iv_work_item *work;
 
-		work = iv_container_of(tinfo->work_items.next,
-				       struct iv_work_item, list);
-
+		work = iv_container_of(items.next, struct iv_work_item, list);
 		iv_list_del(&work->list);
 
 		work->work(work->cookie);
@@ -360,13 +370,11 @@ static void iv_work_handle_local(void *_tinfo)
 static void iv_work_submit_local(struct iv_work_item *work)
 {
 	struct iv_work_thr_info *tinfo = iv_tls_user_ptr(&iv_work_tls_user);
-	int was_empty;
 
-	was_empty = iv_list_empty(&tinfo->work_items);
+	if (iv_list_empty(&tinfo->work_items))
+		iv_task_register(&tinfo->task);
 
 	iv_list_add_tail(&work->list, &tinfo->work_items);
-	if (was_empty)
-		iv_task_register(&tinfo->task);
 }
 
 void

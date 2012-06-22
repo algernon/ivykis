@@ -26,7 +26,6 @@
 #include <iv_tls.h>
 #include <string.h>
 #include <sys/ioctl.h>
-#include <syslog.h>
 #include "config.h"
 #include "iv_fd_pump.h"
 
@@ -249,12 +248,15 @@ static int iv_fd_pump_try_input(struct iv_fd_pump *ip)
 		ip->buf = (void *)buf;
 	}
 
-	if (!splice_available)
-		ret = read(ip->from_fd, buf->buf + ip->bytes,
-			   BUF_SIZE - ip->bytes);
-	else
-		ret = splice(ip->from_fd, NULL, buf->pfd[1], NULL,
-			     1048576, SPLICE_F_NONBLOCK);
+	do {
+		if (!splice_available) {
+			ret = read(ip->from_fd, buf->buf + ip->bytes,
+				   BUF_SIZE - ip->bytes);
+		} else {
+			ret = splice(ip->from_fd, NULL, buf->pfd[1], NULL,
+				     1048576, SPLICE_F_NONBLOCK);
+		}
+	} while (ret < 0 && errno == EINTR);
 
 	if (ret < 0) {
 		if (errno != EAGAIN)
@@ -293,11 +295,14 @@ static int iv_fd_pump_try_output(struct iv_fd_pump *ip)
 	struct iv_fd_pump_buf *buf = iv_fd_pump_buf(ip);
 	int ret;
 
-	if (!splice_available)
-		ret = write(ip->to_fd, buf->buf, ip->bytes);
-	else
-		ret = splice(buf->pfd[0], NULL, ip->to_fd, NULL,
-			     ip->bytes, 0);
+	do {
+		if (!splice_available) {
+			ret = write(ip->to_fd, buf->buf, ip->bytes);
+		} else {
+			ret = splice(buf->pfd[0], NULL, ip->to_fd, NULL,
+				     ip->bytes, 0);
+		}
+	} while (ret < 0 && errno == EINTR);
 
 	if (ret <= 0)
 		return (ret < 0 && errno == EAGAIN) ? 0 : -1;
@@ -344,8 +349,7 @@ static int __iv_fd_pump_pump(struct iv_fd_pump *ip)
 		return 0;
 	}
 
-	syslog(LOG_CRIT, "iv_fd_pump_pump: saw_fin == %d", ip->saw_fin);
-	abort();
+	iv_fatal("iv_fd_pump_pump: saw_fin == %d", ip->saw_fin);
 }
 
 int iv_fd_pump_pump(struct iv_fd_pump *ip)

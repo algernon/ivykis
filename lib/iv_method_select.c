@@ -1,6 +1,6 @@
 /*
  * ivykis, an event handling library
- * Copyright (C) 2002, 2003, 2009 Lennert Buytenhek
+ * Copyright (C) 2002, 2003, 2009, 2012 Lennert Buytenhek
  * Dedicated to Marija Kulikova.
  *
  * This library is free software; you can redistribute it and/or modify
@@ -23,7 +23,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <syslog.h>
 #include <sys/types.h>
 #ifdef HAVE_SYS_SELECT_H
 #include <sys/select.h>
@@ -31,73 +30,85 @@
 #include <sys/time.h>
 #include "iv_private.h"
 
+static fd_set *readfds_master(struct iv_state *st)
+{
+	return (fd_set *)st->select.sets;
+}
+
+static fd_set *writefds_master(struct iv_state *st)
+{
+	return (fd_set *)(st->select.sets + st->select.setsize);
+}
+
+static fd_set *readfds(struct iv_state *st)
+{
+	return (fd_set *)(st->select.sets + 2 * st->select.setsize);
+}
+
+static fd_set *writefds(struct iv_state *st)
+{
+	return (fd_set *)(st->select.sets + 3 * st->select.setsize);
+}
+
 static int iv_select_init(struct iv_state *st)
 {
 	int setsize;
-	unsigned char *fdsets;
+	void *sets;
 
-	INIT_IV_AVL_TREE(&st->select.fds, iv_fd_avl_compare);
+	setsize = 8 * ((maxfd + 63) / 64);
 
-	setsize = (maxfd + 7) / 8;
-
-	fdsets = malloc(4 * setsize);
-	if (fdsets == NULL)
+	sets = malloc(4 * setsize);
+	if (sets == NULL)
 		return -1;
 
-	memset(fdsets, 0, 2 * setsize);
+	memset(sets, 0, 2 * setsize);
 
-	st->select.readfds_master = (fd_set *)fdsets;
-	st->select.writefds_master = (fd_set *)(fdsets + setsize);
-	st->select.readfds = (fd_set *)(fdsets + 2 * setsize);
-	st->select.writefds = (fd_set *)(fdsets + 3 * setsize);
-
+	INIT_IV_AVL_TREE(&st->select.fds, iv_fd_avl_compare);
+	st->select.sets = sets;
+	st->select.setsize = setsize;
 	st->select.fd_max = 0;
 
 	return 0;
 }
 
-static void
-iv_select_poll(struct iv_state *st, struct iv_list_head *active, int msec)
+static void iv_select_poll(struct iv_state *st,
+			   struct iv_list_head *active, struct timespec *to)
 {
 	int bytes;
-	struct timeval to;
+	struct timeval tv;
 	int ret;
 	int i;
 
 	bytes = ((st->select.fd_max + 1) + 7) / 8;
 
-	memcpy(st->select.readfds, st->select.readfds_master, bytes);
-	memcpy(st->select.writefds, st->select.writefds_master, bytes);
+	memcpy(readfds(st), readfds_master(st), bytes);
+	memcpy(writefds(st), writefds_master(st), bytes);
 
-	to.tv_sec = msec / 1000;
-	to.tv_usec = 1000 * (msec % 1000);
+	tv.tv_sec = to->tv_sec;
+	tv.tv_usec = (to->tv_nsec + 999) / 1000;
 
-	ret = select(st->select.fd_max + 1, st->select.readfds,
-		     st->select.writefds, NULL, &to);
+	ret = select(st->select.fd_max + 1, readfds(st),
+		     writefds(st), NULL, &tv);
 	if (ret < 0) {
 		if (errno == EINTR)
 			return;
 
-		syslog(LOG_CRIT, "iv_select_poll: got error %d[%s]", errno,
-		       strerror(errno));
-		abort();
+		iv_fatal("iv_select_poll: got error %d[%s]", errno,
+			 strerror(errno));
 	}
 
 	for (i = 0; i <= st->select.fd_max; i++) {
 		int pollin;
 		int pollout;
 
-		pollin = !!FD_ISSET(i, st->select.readfds);
-		pollout = !!FD_ISSET(i, st->select.writefds);
+		pollin = !!FD_ISSET(i, readfds(st));
+		pollout = !!FD_ISSET(i, writefds(st));
 		if (pollin || pollout) {
 			struct iv_fd_ *fd;
 
 			fd = iv_fd_avl_find(&st->select.fds, i);
-			if (fd == NULL) {
-				syslog(LOG_CRIT, "iv_select_poll: can't "
-						 "find fd");
-				abort();
-			}
+			if (fd == NULL)
+				iv_fatal("iv_select_poll: can't find fd");
 
 			if (pollin)
 				iv_fd_make_ready(active, fd, MASKIN);
@@ -114,9 +125,8 @@ static void iv_select_register_fd(struct iv_state *st, struct iv_fd_ *fd)
 
 	ret = iv_avl_tree_insert(&st->select.fds, &fd->avl_node);
 	if (ret) {
-		syslog(LOG_CRIT, "iv_select_register_fd: got error %d[%s]",
-		       ret, strerror(ret));
-		abort();
+		iv_fatal("iv_select_register_fd: got error %d[%s]", ret,
+			 strerror(ret));
 	}
 
 	if (fd->fd > st->select.fd_max)
@@ -145,14 +155,14 @@ static void iv_select_unregister_fd(struct iv_state *st, struct iv_fd_ *fd)
 static void iv_select_notify_fd(struct iv_state *st, struct iv_fd_ *fd)
 {
 	if (fd->wanted_bands & MASKIN)
-		FD_SET(fd->fd, st->select.readfds_master);
+		FD_SET(fd->fd, readfds_master(st));
 	else
-		FD_CLR(fd->fd, st->select.readfds_master);
+		FD_CLR(fd->fd, readfds_master(st));
 
 	if (fd->wanted_bands & MASKOUT)
-		FD_SET(fd->fd, st->select.writefds_master);
+		FD_SET(fd->fd, writefds_master(st));
 	else
-		FD_CLR(fd->fd, st->select.writefds_master);
+		FD_CLR(fd->fd, writefds_master(st));
 
 	fd->registered_bands = fd->wanted_bands;
 }
@@ -160,19 +170,21 @@ static void iv_select_notify_fd(struct iv_state *st, struct iv_fd_ *fd)
 static int iv_select_notify_fd_sync(struct iv_state *st, struct iv_fd_ *fd)
 {
 	int bytes;
-	struct timeval to = { 0, 0 };
+	struct timeval tv = { 0, 0 };
 	int ret;
 
 	bytes = ((st->select.fd_max + 1) + 7) / 8;
 
-	memset(st->select.readfds, 0, bytes);
-	memset(st->select.writefds, 0, bytes);
+	memset(readfds(st), 0, bytes);
+	memset(writefds(st), 0, bytes);
 
-	FD_SET(fd->fd, st->select.readfds);
-	FD_SET(fd->fd, st->select.writefds);
+	FD_SET(fd->fd, readfds(st));
+	FD_SET(fd->fd, writefds(st));
 
-	ret = select(fd->fd + 1, st->select.readfds,
-		     st->select.writefds, NULL, &to);
+	do {
+		ret = select(fd->fd + 1, readfds(st),
+			     writefds(st), NULL, &tv);
+	} while (ret < 0 && errno == EINTR);
 
 	if (ret < 0)
 		return -1;
@@ -184,7 +196,7 @@ static int iv_select_notify_fd_sync(struct iv_state *st, struct iv_fd_ *fd)
 
 static void iv_select_deinit(struct iv_state *st)
 {
-	free(st->select.readfds_master);
+	free(st->select.sets);
 }
 
 

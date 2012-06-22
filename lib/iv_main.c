@@ -22,6 +22,7 @@
 #include <stdlib.h>
 #include <pthread.h>
 #include <signal.h>
+#include <stdarg.h>
 #include <string.h>
 #include <syslog.h>
 #include <sys/resource.h>
@@ -31,13 +32,12 @@
 int			maxfd;
 struct iv_poll_method	*method;
 
-static int sanitise_nofile_rlimit(int euid)
+static void sanitise_nofile_rlimit(int euid)
 {
 	struct rlimit lim;
-	int max_files;
 
 	getrlimit(RLIMIT_NOFILE, &lim);
-	max_files = lim.rlim_cur;
+	maxfd = lim.rlim_cur;
 
 	if (euid) {
 		if (lim.rlim_cur < lim.rlim_max) {
@@ -46,14 +46,14 @@ static int sanitise_nofile_rlimit(int euid)
 				lim.rlim_cur = 131072;
 
 			if (setrlimit(RLIMIT_NOFILE, &lim) >= 0)
-				max_files = lim.rlim_cur;
+				maxfd = lim.rlim_cur;
 		}
 	} else {
 		lim.rlim_cur = 131072;
 		lim.rlim_max = 131072;
-		while (lim.rlim_cur > max_files) {
+		while (lim.rlim_cur > maxfd) {
 			if (setrlimit(RLIMIT_NOFILE, &lim) >= 0) {
-				max_files = lim.rlim_cur;
+				maxfd = lim.rlim_cur;
 				break;
 			}
 
@@ -61,8 +61,6 @@ static int sanitise_nofile_rlimit(int euid)
 			lim.rlim_max /= 2;
 		}
 	}
-
-	return max_files;
 }
 
 static int method_is_excluded(char *exclude, char *name)
@@ -100,7 +98,7 @@ static void iv_init_first_thread(struct iv_state *st)
 	signal(SIGPIPE, SIG_IGN);
 	signal(SIGURG, SIG_IGN);
 
-	maxfd = sanitise_nofile_rlimit(euid);
+	sanitise_nofile_rlimit(euid);
 	method = NULL;
 
 	exclude = getenv("IV_EXCLUDE_POLL_METHOD");
@@ -126,11 +124,8 @@ static void iv_init_first_thread(struct iv_state *st)
 	consider_poll_method(st, exclude, &iv_method_select);
 #endif
 
-	if (method == NULL) {
-		syslog(LOG_CRIT, "iv_init: can't find suitable event "
-				 "dispatcher");
-		abort();
-	}
+	if (method == NULL)
+		iv_fatal("iv_init: can't find suitable event dispatcher");
 }
 
 
@@ -139,6 +134,7 @@ pthread_key_t			iv_state_key;
 #ifdef HAVE_THREAD
 __thread struct iv_state	*__st;
 #endif
+void				(*fatal_msg_handler)(const char *msg);
 
 static void __iv_deinit(struct iv_state *st)
 {
@@ -184,21 +180,16 @@ void iv_init(void)
 	struct iv_state *st;
 
 	if (method == NULL) {
-		if (pthread_key_create(&iv_state_key, iv_state_destructor)) {
-			fprintf(stderr, "iv_state_allocate_key: failed "
-					"to allocate TLS key\n");
-			abort();
-		}
+		if (pthread_key_create(&iv_state_key, iv_state_destructor))
+			iv_fatal("iv_init: failed to allocate TLS key");
 	}
 
 	st = iv_allocate_state();
 
-	if (method == NULL) {
+	if (method == NULL)
 		iv_init_first_thread(st);
-	} else if (method->init(st) < 0) {
-		syslog(LOG_CRIT, "iv_init: can't initialize event dispatcher");
-		abort();
-	}
+	else if (method->init(st) < 0)
+		iv_fatal("iv_init: can't initialize event dispatcher");
 
 	st->handled_fd = NULL;
 	st->numfds = 0;
@@ -270,7 +261,6 @@ void iv_main(void)
 	st->quit = 0;
 	while (1) {
 		struct timespec to;
-		int msec;
 
 		iv_run_tasks(st);
 		iv_run_timers(st);
@@ -278,13 +268,11 @@ void iv_main(void)
 		if (should_quit(st))
 			break;
 
-		if (!iv_pending_tasks(st) && !iv_get_soonest_timeout(st, &to)) {
-			msec = 1000 * to.tv_sec;
-			msec += (to.tv_nsec + 999999) / 1000000;
-		} else {
-			msec = 0;
+		if (iv_pending_tasks(st) || iv_get_soonest_timeout(st, &to)) {
+			to.tv_sec = 0;
+			to.tv_nsec = 0;
 		}
-		method->poll(st, &active, msec);
+		method->poll(st, &active, &to);
 
 		__iv_invalidate_now(st);
 
@@ -297,4 +285,28 @@ void iv_deinit(void)
 	struct iv_state *st = iv_get_state();
 
 	__iv_deinit(st);
+}
+
+void iv_fatal(const char *fmt, ...)
+{
+	va_list ap;
+	char msg[1024];
+
+	va_start(ap, fmt);
+	vsnprintf(msg, sizeof(msg), fmt, ap);
+	va_end(ap);
+
+	msg[sizeof(msg) - 1] = 0;
+
+	if (fatal_msg_handler != NULL)
+		fatal_msg_handler(msg);
+	else
+		syslog(LOG_CRIT, msg);
+
+	abort();
+}
+
+void iv_set_fatal_msg_handler(void (*handler)(const char *msg))
+{
+	fatal_msg_handler = handler;
 }

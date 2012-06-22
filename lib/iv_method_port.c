@@ -22,7 +22,6 @@
 #include <stdlib.h>
 #include <port.h>
 #include <string.h>
-#include <syslog.h>
 #include "iv_private.h"
 
 #define PORTEV_NUM	1024
@@ -76,9 +75,8 @@ static int __iv_port_upload_one(struct iv_state *st, struct iv_fd_ *fd)
 static void iv_port_upload_one(struct iv_state *st, struct iv_fd_ *fd)
 {
 	if (__iv_port_upload_one(st, fd) < 0) {
-		syslog(LOG_CRIT, "iv_port_upload_one: got error %d[%s]",
-		       errno, strerror(errno));
-		abort();
+		iv_fatal("iv_port_upload_one: got error %d[%s]", errno,
+			 strerror(errno));
 	}
 }
 
@@ -94,10 +92,9 @@ static void iv_port_upload(struct iv_state *st)
 	}
 }
 
-static void
-iv_port_poll(struct iv_state *st, struct iv_list_head *active, int msec)
+static void iv_port_poll(struct iv_state *st,
+			 struct iv_list_head *active, struct timespec *to)
 {
-	struct timespec to;
 	int nget;
 	port_event_t pe[PORTEV_NUM];
 	int ret;
@@ -105,19 +102,15 @@ iv_port_poll(struct iv_state *st, struct iv_list_head *active, int msec)
 
 	iv_port_upload(st);
 
-	to.tv_sec = msec / 1000;
-	to.tv_nsec = 1000000 * (msec % 1000);
-
 poll_more:
 	nget = 1;
-	ret = port_getn(st->port.port_fd, pe, PORTEV_NUM, &nget, &to);
+	ret = port_getn(st->port.port_fd, pe, PORTEV_NUM, &nget, to);
 	if (ret < 0) {
 		if (errno == EINTR || errno == ETIME)
 			return;
 
-		syslog(LOG_CRIT, "iv_port_poll: got error %d[%s]", errno,
-		       strerror(errno));
-		abort();
+		iv_fatal("iv_port_poll: got error %d[%s]", errno,
+			 strerror(errno));
 	}
 
 	for (i = 0; i < nget; i++) {
@@ -141,8 +134,8 @@ poll_more:
 	}
 
 	if (nget == PORTEV_NUM) {
-		to.tv_sec = 0;
-		to.tv_nsec = 0;
+		to->tv_sec = 0;
+		to->tv_nsec = 0;
 		goto poll_more;
 	}
 }
@@ -160,7 +153,7 @@ static void iv_port_notify_fd(struct iv_state *st, struct iv_fd_ *fd)
 		iv_list_add_tail(&fd->list_notify, &st->port.notify);
 }
 
-static void iv_port_notify_fd_sync(struct iv_state *st, struct iv_fd_ *fd)
+static int iv_port_notify_fd_sync(struct iv_state *st, struct iv_fd_ *fd)
 {
 	return __iv_port_upload_one(st, fd);
 }

@@ -22,7 +22,6 @@
 #include <stdlib.h>
 #include <stddef.h>
 #include <string.h>
-#include <syslog.h>
 #include <sys/poll.h>
 #include "iv_private.h"
 
@@ -43,8 +42,8 @@ static int iv_poll_init(struct iv_state *st)
 	return 0;
 }
 
-static void
-iv_poll_poll(struct iv_state *st, struct iv_list_head *active, int msec)
+static void iv_poll_poll(struct iv_state *st,
+			 struct iv_list_head *active, struct timespec *to)
 {
 	int ret;
 	int i;
@@ -57,14 +56,14 @@ iv_poll_poll(struct iv_state *st, struct iv_list_head *active, int msec)
 	errno = EINTR;
 #endif
 
-	ret = poll(st->poll.pfds, st->poll.num_registered_fds, msec);
+	ret = poll(st->poll.pfds, st->poll.num_registered_fds,
+		   1000 * to->tv_sec + ((to->tv_nsec + 999999) / 1000000));
 	if (ret < 0) {
 		if (errno == EINTR)
 			return;
 
-		syslog(LOG_CRIT, "iv_poll_poll: got error %d[%s]", errno,
-		       strerror(errno));
-		abort();
+		iv_fatal("iv_poll_poll: got error %d[%s]", errno,
+			 strerror(errno));
 	}
 
 	for (i = 0; i < st->poll.num_registered_fds; i++) {
@@ -145,7 +144,10 @@ static int iv_poll_notify_fd_sync(struct iv_state *st, struct iv_fd_ *fd)
 
 	pfd.fd = fd->fd;
 	pfd.events = POLLIN | POLLOUT | POLLHUP;
-	ret = poll(&pfd, 1, 0);
+
+	do {
+		ret = poll(&pfd, 1, 0);
+	} while (ret < 0 && errno == EINTR);
 
 	if (ret < 0 || (pfd.revents & POLLNVAL))
 		return -1;
