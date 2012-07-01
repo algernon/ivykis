@@ -1,5 +1,5 @@
-usr/lib/*/libivykis*.a
-usr/lib/*/libivykis*.so
-usr/lib/*/pkgconfig/*
+usr/lib/libivykis*.a
+usr/lib/libivykis*.so
+usr/lib/pkgconfig/*
 usr/include/*
 usr/share/man/man3/*

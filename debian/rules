@@ -3,6 +3,9 @@
 
 export DH_OPTIONS += -O-Bdebian/build-tree --dbg-package=libivykis0-dbg
 
+override_dh_auto_configure:
+	dh_auto_configure -- --libdir=/usr/lib
+
 override_dh_installdocs:
 	dh_installdocs --link-doc=libivykis0
 

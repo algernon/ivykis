@@ -9,8 +9,6 @@ Vcs-Git: git://git.madhouse-project.org/debian/ivykis.git
 Vcs-Browser: http://git.madhouse-project.org/debian/ivykis/
 
 Package: libivykis0
-Multi-Arch: same
-Pre-Depends: ${misc:Pre-Depends}
 Architecture: any
 Depends: ${misc:Depends}, ${shlibs:Depends}
 Description: Asynchronous I/O readiness notification library
@@ -43,7 +41,6 @@ Description: Development libraries, header files and docs for libivykis
  file descriptors as its event sources.
 
 Package: libivykis0-dbg
-Multi-Arch: same
 Section: debug
 Architecture: any
 Depends: libivykis0 (= ${binary:Version}), ${misc:Depends}
