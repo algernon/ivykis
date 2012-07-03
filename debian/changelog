@@ -1,11 +1,13 @@
-ivykis (0.30.1-1) unstable; urgency=low
+ivykis (0.30.1-1+b1) unstable; urgency=low
+
+  * De-multiarchified build for backports.
 
   * New upstream bugfix release:
     + Fix a possible deadlock situation, introduced in 0.30.
     + Work around iv_fd_register_try() being called without handlers
       (triggered by syslog-ng)
 
- -- Gergely Nagy <algernon@madhouse-project.org>  Tue, 03 Jul 2012 20:13:39 +0200
+ -- Gergely Nagy <algernon@madhouse-project.org>  Tue, 03 Jul 2012 20:25:11 +0200
 
 ivykis (0.30-1) unstable; urgency=low
 
