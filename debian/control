@@ -29,8 +29,8 @@ Package: libivykis-dev
 Section: libdevel
 Architecture: any
 Depends: libivykis0 (= ${binary:Version}), ${misc:Depends}
-Breaks: libsyslog-ng-dev (<< 3.3.6~)
-Replaces: libsyslog-ng-dev (<< 3.3.6~)
+Breaks: libsyslog-ng-dev (<< 3.3.5.90~)
+Replaces: libsyslog-ng-dev (<< 3.3.5.90~)
 Description: Development libraries, header files and docs for libivykis
  Contains the header files, documentation, examples and static
  libraries for use in developing applications that use the libivykis
