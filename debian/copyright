@@ -8,7 +8,7 @@ Files: *
 Copyright: Copyright (C) 2002-2012 Lennert Buytenhek <buytenh@wantstofly.org>
 License: LGPL-2.1+
 
-Files: lib/man3/* modules/man3/*
+Files: man3/*
 Copyright: Copyright (C) 2002-2012 Lennert Buytenhek <buytenh@wantstofly.org>
 License: other
  Permission is granted to distribute possibly modified copies
@@ -17,7 +17,7 @@ License: other
  of the modification is added to the header.
 
 Files: debian/*
-Copyright: Copyright (C) 2011-2012 Gergely Nagy <algernon@madhouse-project.org>
+Copyright: Copyright (C) 2011-2013 Gergely Nagy <algernon@madhouse-project.org>
 License: LGPL-2.1+
 
 License: LGPL-2.1+
