@@ -1,3 +1,11 @@
+ivykis (0.36.2-1) unstable; urgency=low
+
+  * New upstream stable release, targeted at unstable.
+  * Fixes the eventfd2 bug on mips (#702131).
+  * Standards-Version bumped to 3.9.4, no changes necessary.
+
+ -- Gergely Nagy <algernon@madhouse-project.org>  Thu, 09 May 2013 17:33:29 +0200
+
 ivykis (0.36.1-1) experimental; urgency=low
 
   * New upstream stable release.
