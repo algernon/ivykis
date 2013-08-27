@@ -1,3 +1,10 @@
+ivykis (0.36.2-2) unstable; urgency=low
+
+  * Applied upstream patch to reduce the test AVL tree size, so that the
+    test suite does not time out on m68k.
+
+ -- Gergely Nagy <algernon@madhouse-project.org>  Tue, 27 Aug 2013 11:16:05 +0200
+
 ivykis (0.36.2-1) unstable; urgency=low
 
   * New upstream stable release, targeted at unstable.
