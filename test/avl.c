@@ -133,7 +133,7 @@ static void tree_check(struct iv_avl_tree *this, int expected_count)
 }
 
 
-#define NUM	16384
+#define NUM	1024
 
 static struct node *f[NUM];
 
@@ -165,7 +165,7 @@ int main()
 {
 	int i;
 
-	alarm(300);
+	alarm(180);
 
 	srand(time(NULL) ^ getpid());
 
