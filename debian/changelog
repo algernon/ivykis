@@ -1,3 +1,9 @@
+ivykis (0.36.2-1~bpo70+1) wheezy-backports; urgency=medium
+
+  * Rebuild for wheezy-backports, for syslog-ng.
+
+ -- Gergely Nagy <algernon@madhouse-project.org>  Mon, 13 Oct 2014 18:53:50 +0200
+
 ivykis (0.36.2-1) unstable; urgency=low
 
   * New upstream stable release, targeted at unstable.
