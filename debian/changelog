@@ -1,3 +1,12 @@
+ivykis (0.36.2-3) unstable; urgency=medium
+
+  * Orphaning the package.
+  * Standards-Version bumped to 3.9.6, no changes necessary.
+  * Update the Vcs-* fields to point at collab-maint.
+  * Update debian/copyright.
+
+ -- Gergely Nagy <algernon@madhouse-project.org>  Wed, 30 Sep 2015 13:35:12 +0200
+
 ivykis (0.36.2-2) unstable; urgency=low
 
   * Applied upstream patch to reduce the test AVL tree size, so that the
